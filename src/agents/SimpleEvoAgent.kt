@@ -1,8 +1,8 @@
 package agents
 
 import ggi.AbstractGameState
+import ggi.ActionAbstractGameState
 import ggi.SimplePlayerInterface
-
 
 import java.util.Random
 
@@ -37,14 +37,15 @@ data class SimpleEvoAgent(
 
     var x: Int? = 1
 
-
     fun getActions(gameState: AbstractGameState, playerId: Int): IntArray {
         var solution = buffer ?: randomPoint(gameState.nActions())
         if (useShiftBuffer) {
             if (solution == null)
                 solution = randomPoint(gameState.nActions())
-            else
-                solution = shiftLeftAndRandomAppend(solution, gameState.nActions())
+            else {
+                val numberToShiftLeft = if (gameState is ActionAbstractGameState) gameState.codonsPerAction() else 1
+                solution = shiftLeftAndRandomAppend(solution, numberToShiftLeft, gameState.nActions())
+            }
         } else {
             // System.out.println("New random solution with nActions = " + gameState.nActions())
             solution = randomPoint(gameState.nActions())
@@ -53,6 +54,7 @@ data class SimpleEvoAgent(
         solutions.add(solution)
         for (i in 0 until nEvals) {
             // evaluate the current one
+     //       println("Evaluation $i for player $playerId")
             val mut = mutate(solution, probMutation, gameState.nActions())
             val curScore = evalSeq(gameState.copy(), solution, playerId)
             val mutScore = evalSeq(gameState.copy(), mut, playerId)
@@ -112,12 +114,13 @@ data class SimpleEvoAgent(
         return p
     }
 
-    private fun shiftLeftAndRandomAppend(v: IntArray, nActions: Int): IntArray {
+    private fun shiftLeftAndRandomAppend(v: IntArray, shift: Int, nActions: Int): IntArray {
         val p = IntArray(v.size)
-        for (i in 0 until p.size - 1) {
-            p[i] = v[i + 1]
+        for (i in 0 until p.size - shift) {
+            p[i] = v[i + shift]
         }
-        p[p.size - 1] = random.nextInt(nActions)
+        for (i in shift..1)
+            p[p.size - i] = random.nextInt(nActions)
         return p
     }
 
@@ -133,13 +136,32 @@ data class SimpleEvoAgent(
     private fun evalSeqNoDiscount(gameState: AbstractGameState, seq: IntArray, playerId: Int): Double {
         var gameState = gameState
         val current = gameState.score()
-        val actions = IntArray(2)
+        val intPerAction = if (gameState is ActionAbstractGameState) gameState.codonsPerAction() else 1
+        val actions = IntArray(2 * intPerAction)
+        var currentActionPointer = 0
+
         for (action in seq) {
-            actions[playerId] = action
-            actions[1 - playerId] = opponentModel.getAction(gameState, 1 - playerId)
-            gameState = gameState.next(actions)
+            actions[playerId * intPerAction + currentActionPointer] = action
+            //TODO: This is fine with an opponent model that does nothing...but will not work otherwise
+            // The problem being that SimpleAgentInterface only permits getAction: Int
+            actions[(1 - playerId) * intPerAction + currentActionPointer] = opponentModel.getAction(gameState, 1 - playerId)
+            when (gameState) {
+                is ActionAbstractGameState -> {
+                    currentActionPointer++
+                    if (currentActionPointer == intPerAction) {
+                        val action1 = gameState.translateGene(0, actions.sliceArray(0..intPerAction))
+                        val action2 = gameState.translateGene(1, actions.sliceArray(intPerAction..(2 * intPerAction - 1)))
+       //                 println("\tBlue Action is $action1, Red Action is $action2")
+                        gameState = gameState.next(listOf(action1, action2))
+                        currentActionPointer = 0
+                    }
+                }
+                else -> gameState = gameState.next(actions)
+            }
         }
+
         val delta = gameState.score() - current
+  //      println("Score change of evaluation is $delta")
         return if (playerId == 0)
             delta
         else

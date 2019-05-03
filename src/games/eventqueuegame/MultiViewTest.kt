@@ -7,13 +7,13 @@ import javax.swing.JComponent
 
 fun main() {
 
-    val params = EventGameParams(nAttempts = 20, minRad = 20, maxRad = 50)
-    val world = World().randomize(params).randomiseIds()
+    val params = EventGameParams(nAttempts = 20)
+    val world = World(params = params)
     val game = EventQueueGame()
     game.world = world
 
     game.eventQueue.add(Event(200,
-            CityInflux(nPeople = 100, cityId = 0, playerId = PlayerId.Blue)))
+            CityInflux(Transit(nPeople = 100, fromCity = 0, toCity = 1, playerId = PlayerId.Blue, startTime = 0, endTime = 0))))
 
     println(world)
 
@@ -31,7 +31,7 @@ fun main() {
 
     while (true) {
         multiView.repaint()
-        game.next(intArrayOf())
+        game.next(emptyList())
         // now process each version of the game
 
         // create separate fogged out copies for each view

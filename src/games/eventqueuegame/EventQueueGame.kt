@@ -1,70 +1,104 @@
 package games.eventqueuegame
 
+import games.simplegridgame.w
 import ggi.AbstractGameState
+import ggi.Action
+import ggi.ActionAbstractGameState
 import ggi.ExtendedAbstractGameState
 import math.Vec2d
 import java.util.*
 import kotlin.collections.ArrayList
+import kotlin.math.nextUp
+import kotlin.math.roundToInt
 import kotlin.random.Random
 
 // todo : Create and test and Event Queue
 
-data class Event(val tick: Int, val effect: Effect) : Comparable<Event> {
+data class Event(val tick: Int, val action: Action) : Comparable<Event> {
     override fun compareTo(other: Event): Int {
         return tick.compareTo(other.tick)
     }
+}
+
+/*
+ A returned positive value is the number of surviving attackers; a negative value is interpreted as the number of
+ surviving defenders, with the attack repulsed
+ */
+fun lanchesterLinearBattle(attack: Double, defence: Double, attackerDamageCoeff: Double, defenderDamageCoeff: Double): Double {
+    var attackingForce = attack
+    var defendingForce = defence
+    var count = 0
+    do {
+        val attackDmg = attackingForce * attackerDamageCoeff
+        val defenceDmg = defendingForce * defenderDamageCoeff
+        attackingForce -= defenceDmg
+        defendingForce -= attackDmg
+        count++
+    } while (attackingForce > 0.0 && defendingForce > 0.0 && count < 100)
+    return if (defendingForce > 0.0) -defendingForce else attackingForce
 }
 
 enum class PlayerId {
     Blue, Red, Neutral, Fog
 }
 
-data class City(val location: Vec2d, var radius: Int = 40, var pop: Int = 100, var owner: PlayerId = PlayerId.Neutral)
+data class City(val location: Vec2d, val radius: Int = 10, var pop: Int = 100, var owner: PlayerId = PlayerId.Neutral)
 
 data class EventGameParams(
-        var nAttempts: Int = 10,
-        var width: Int = 1000,
-        var height: Int = 600,
-        var minRad: Int = 20,
-        var maxRad: Int = 100,
-        var minPop: Int = 10,
-        var maxPop: Int = 100,
-        var minSep: Int = 30,
-        var seed: Long? = 10
+        val nAttempts: Int = 10,
+        val width: Int = 1000,
+        val height: Int = 600,
+        //      var minRad: Int = 20,
+        //      var maxRad: Int = 100,
+        //      var minPop: Int = 10,
+        val maxPop: Int = 100,
+        val minSep: Int = 30
 )
 
 
-data class World(var cities: ArrayList<City> = ArrayList()) {
-    var width = 1000
-    var height = 600
-    var random = Random(1)
+data class World(var cities: ArrayList<City> = ArrayList(), val width: Int = 1000, val height: Int = 600,
+                 val speed: Double = 1.0,
+                 val random: Random = Random(3),
+                 val params: EventGameParams = EventGameParams()) {
 
-    fun randomize(params: EventGameParams = EventGameParams()): World {
+    init {
+        initialise()
+    }
+
+    var currentTransits: ArrayList<Transit> = ArrayList()
+    var currentTicks: Int = 0
+
+    private fun initialise() {
         // just keep it like so
-        cities.clear()
+        cities = ArrayList()
         with(params) {
-            if (seed != null) random = Random(seed!!)
             for (i in 0 until nAttempts) {
-                val rad = minRad + random.nextInt(maxRad - minRad)
-                val pop = minPop + random.nextInt(maxPop - minPop)
-                val location = Vec2d(rad + random.nextDouble(width - 2 * rad.toDouble()),
-                        rad + random.nextDouble(height - 2 * rad.toDouble()))
-                val city = City(location, rad, pop)
+                val location = Vec2d(minSep + random.nextDouble((width - 2.0 * minSep)),
+                        minSep + random.nextDouble((height - 2.0 * minSep)))
+                val city = City(location, minSep / 2, 0)
                 if (canPlace(city, cities, minSep)) cities.add(city)
             }
         }
-        return this
+        var blueBase = 0
+        var redBase = 0
+        while (blueBase == redBase) {
+            blueBase = random.nextInt(cities.size)
+            redBase = random.nextInt(cities.size)
+        }
+        cities[blueBase].owner = PlayerId.Blue
+        cities[blueBase].pop = params.maxPop
+        cities[redBase].owner = PlayerId.Red
+        cities[redBase].pop = params.maxPop
     }
 
-    fun canPlace(c: City, cities: ArrayList<City>, minSep: Int): Boolean {
+    fun setTime(time: Int) {
+        currentTicks = time
+    }
+
+    fun canPlace(c: City, cities: List<City>, minSep: Int): Boolean {
         for (el in cities)
             if (c.location.distanceTo(el.location) < c.radius + el.radius + minSep) return false
         return true
-    }
-
-    fun randomiseIds(): World {
-        for (c in cities) c.owner = PlayerId.values()[random.nextInt(PlayerId.values().size)]
-        return this
     }
 
     fun fogTest(id: PlayerId): World {
@@ -80,82 +114,177 @@ data class World(var cities: ArrayList<City> = ArrayList()) {
 
     fun deepCopy(): World {
         val state = copy()
-        state.cities = ArrayList()
-        for (c in cities) state.cities.add(c.copy())
+        state.cities = ArrayList(cities.map { c -> City(c.location, c.radius, c.pop, c.owner) })
+        state.currentTransits = ArrayList(currentTransits.filter { true })
+        state.currentTicks = currentTicks
         return state
+    }
+
+    fun addTransit(transit: Transit) {
+        currentTransits.add(transit)
+    }
+
+    fun removeTransit(transit: Transit) {
+        if (currentTransits.contains(transit))
+            currentTransits.remove(transit)
+        else
+            throw AssertionError("Transit to be removed is not recognised")
     }
 
 }
 
+data class Transit(val nPeople: Int, val fromCity: Int, val toCity: Int, val playerId: PlayerId, val startTime: Int, val endTime: Int)
 
-interface Effect {
-    fun apply(world: World)
+data class CityEfflux(val transit: Transit) : Action {
+    override fun apply(state: ActionAbstractGameState): ActionAbstractGameState {
+        if (state is EventQueueGame) {
+            val world = state.world
+            val city = world.cities[transit.fromCity]
+            if (city.owner == transit.playerId) {
+                if (city.pop < transit.nPeople)
+                    throw AssertionError("Invalid Transit - maximum force move is limited to city population")
+                city.pop -= transit.nPeople
+            } else {
+                throw AssertionError("Invalid Transit - must be from city owned by playerId")
+            }
+            world.addTransit(transit)
+        }
+        return state
+    }
 }
 
-data class CityInflux(val nPeople: Int, val cityId: Int, val playerId: PlayerId) : Effect {
-    override fun apply(world: World) {
-        val city = world.cities[cityId]
-        if (city.owner == playerId) {
-            city.pop += nPeople
-        } else {
-            city.pop -= nPeople
-            if (city.pop <= 0) {
-                city.pop = -city.pop
-                city.owner = playerId
+data class CityInflux(val transit: Transit) : Action {
+    override fun apply(state: ActionAbstractGameState): ActionAbstractGameState {
+        if (state is EventQueueGame) {
+            val world = state.world
+            val city = world.cities[transit.toCity]
+            if (city.owner == transit.playerId) {
+                city.pop += transit.nPeople
+            } else {
+                val result = lanchesterLinearBattle(transit.nPeople.toDouble(), city.pop.toDouble(), 0.05, 0.05)
+                if (result > 0.0) {
+                    // attackers win
+                    city.owner = transit.playerId
+                    city.pop = result.toInt()
+                } else {
+                    // defenders win
+                    city.pop = -result.toInt()
+                }
+            }
+            world.removeTransit(transit)
+        }
+        return state
+    }
+}
+
+data class LaunchExpedition(val player: PlayerId, val from: Int, val to: Int, val proportion: Int, val wait: Int) : Action {
+    override fun apply(state: ActionAbstractGameState): ActionAbstractGameState {
+        if (state is EventQueueGame) {
+            val world = state.world
+            if (isValid(world)) {
+                val sourceCityPop = world.cities[from].pop
+                val maxActions = world.cities.size.toDouble()
+                val distance = world.cities[from].location.distanceTo(world.cities[to].location)
+                val arrivalTime = world.currentTicks + (distance / world.speed).toInt()
+                val transit = Transit((proportion / maxActions * sourceCityPop).toInt() + 1, from, to, player,
+                        world.currentTicks, arrivalTime)
+                // we execute the troop departure immediately
+                CityEfflux(transit).apply(state)
+                // and put their arrival in the queue for the game state
+                state.eventQueue.add(Event(arrivalTime, CityInflux(transit)))
             }
         }
+        return state
+    }
+
+    fun isValid(world: World): Boolean {
+        return world.cities[from].owner == player &&
+                world.cities[from].pop > 0 &&
+                from != to
     }
 }
 
 var totalTicks: Long = 0
 
-class EventQueueGame : ExtendedAbstractGameState {
+class EventQueueGame : ActionAbstractGameState {
 
     var world = World()
 
-    var eventQueue = PriorityQueue<Event>()
-
-    var nTicks = 0
+    val eventQueue = PriorityQueue<Event>()
 
     override fun copy(): AbstractGameState {
         val state = EventQueueGame()
         state.world = world.deepCopy()
         state.eventQueue.addAll(eventQueue)
-        state.nTicks = nTicks
         return state
     }
 
-    override fun next(actions: IntArray): AbstractGameState {
-        nTicks++
-        totalTicks++
+    override fun playerCount() = 2
 
-        val event = eventQueue.peek()
-        if (event != null && event.tick < nTicks) {
-            // the time has come to trigger it
-            eventQueue.poll()
-            event.effect.apply(world)
-            println("Triggered event: ${event}")
-        }
+    override fun codonsPerAction() = 4
+
+    override fun possibleActions(player: Int): List<Action> {
+        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+    }
+
+    override fun translateGene(player: Int, gene: IntArray): Action {
+        val playerId: PlayerId = if (player == 0) PlayerId.Blue else PlayerId.Red
+        return LaunchExpedition(playerId, gene.get(0), gene.get(1), gene.get(2), gene.get(3))
+    }
+
+    override fun next(actions: List<Action>): EventQueueGame {
+        totalTicks++
+        val currentTime = world.currentTicks
+        world.setTime(currentTime + 1)
+
+        var finished = false
+        do {
+            // we may have multiple events triggering in the same tick
+            val event = eventQueue.peek()
+            if (event != null && event.tick < currentTime) {
+                // the time has come to trigger it
+                eventQueue.poll()
+                event.action.apply(this)
+                //           println("Triggered event: ${event} in Game $this")
+            } else {
+                finished = true
+            }
+        } while (!finished)
+
+/*        // we then take the new actions
+        val blueAction = CityWarAction(PlayerId.Blue, actions[0], actions[1], actions[2], actions[3])
+        val redAction = CityWarAction(PlayerId.Red, actions[4], actions[5], actions[6], actions[7])
+
+        blueAction.apply(this)
+        redAction.apply(this)
+        */
+
+        actions.forEach({ a -> a.apply(this) })
+
         return this
     }
 
     override fun nActions(): Int {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+        return world.cities.size
     }
 
     override fun score(): Double {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+        // we count the number of Blue cities, and subtract the number of red cities
+        val blueCities = world.cities.count { c -> c.owner == PlayerId.Blue }
+        val redCities = world.cities.count { c -> c.owner == PlayerId.Red }
+        return (blueCities - redCities).toDouble()
     }
 
     override fun isTerminal(): Boolean {
-        // for now assume game is never over
-        return false
+        // game is over if all cities are controlled by the same player, whoever that is
+        val player0 = world.cities[0].owner
+        return world.cities.all { c -> c.owner == player0 }
     }
 
     override fun nTicks(): Int {
-        return nTicks
+        return world.currentTicks
     }
-
+/*
     override fun totalTicks(): Long {
         return totalTicks
     }
@@ -166,9 +295,12 @@ class EventQueueGame : ExtendedAbstractGameState {
 
     override fun randomInitialState(): AbstractGameState {
         eventQueue.clear()
-        nTicks = 0
         world = World().randomize()
         return this
     }
 
+    override fun intPerAction(): Int {
+        return 4
+    }
+*/
 }

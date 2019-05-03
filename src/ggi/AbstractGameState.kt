@@ -31,3 +31,28 @@ interface ExtendedAbstractGameState : AbstractGameState {
     fun randomInitialState(): AbstractGameState
 }
 
+interface ActionAbstractGameState : AbstractGameState {
+
+    fun playerCount(): Int
+
+    fun codonsPerAction(): Int
+
+    override fun nActions(): Int {
+        throw AssertionError("Should use codonsPerAction() to determine length of genome for Action")
+    }
+    fun possibleActions(player: Int): List<Action>
+
+    fun next(actions: List<Action>) : ActionAbstractGameState
+    // actions keyed by playerID
+
+    override fun next(actions: IntArray) : AbstractGameState {
+        throw AssertionError("Should use next() with Map of player -> Action")
+    }
+
+    fun translateGene(player: Int, gene: IntArray) : Action
+}
+
+interface Action {
+    fun apply(state: ActionAbstractGameState) : ActionAbstractGameState
+}
+
